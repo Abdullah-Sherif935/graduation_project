@@ -842,8 +842,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.15"
-      upper="3.15"
+      lower="-1.082"
+      upper="1.396"
       effort="10.0"
       velocity="10.0" />
     <dynamics
@@ -1182,5 +1182,33 @@
     xyz_offset="0.035 0.045 -0.009"         
     rpy_offset="0 0 -1.5708"/>
 
+    
+  <link name="camera_collision_shield">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.10 0.03"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="camera_shield_joint" type="fixed">
+    <parent link="camera_holder_link"/>
+    <child link="camera_collision_shield"/>
+    <origin xyz="0.035 0.045 -0.009" rpy="0 0 -1.5708"/>
+  </joint>
+
+  <link name="lidar_collision_shield">
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.04" length="0.04"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="lidar_shield_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_collision_shield"/>
+    <origin xyz="0 0 -0.05" rpy="0 0 0"/>
+  </joint>
 
 </robot>

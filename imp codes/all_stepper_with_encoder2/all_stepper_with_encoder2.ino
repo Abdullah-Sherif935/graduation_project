@@ -29,7 +29,7 @@
 #define M6_EN 6
 
 // ==========================================
-// 2. إعدادات الإنكودر (Hardware PCNT Mode)
+// 2. إعدادات الإنكودر (Hardware PCNT)
 // ==========================================
 #define ENC2_A 9 
 #define ENC2_B 3 
@@ -40,10 +40,9 @@ pcnt_unit_handle_t pcnt_unit = NULL;
 // 3. إعدادات الميكانيكا
 // ==========================================
 const float GEAR_RATIOS[6] = {6.4, 25.0, 18.0952381, 4.0, 1.0, 10.0};
-const bool DIR_STATES[6] = {false, false, true, true, true, true}; 
+const bool DIR_STATES[6] = {true, false, true, true, true, true}; // موفت DIR
 
-// 🛠️ التعديل هنا: عكسنا الإشارة لـ (-1) عشان الهاردوير يقرا لقدام بالموجب
-const int ENCODER_SIGN = 1; 
+const int ENCODER_SIGN = 1; // إشارة الإنكودر المضبوطة
 
 const float STEPS_PER_REV = 1600.0;
 const float STEPS_PER_DEGREE = STEPS_PER_REV / 360.0;
@@ -57,9 +56,8 @@ float target_angle_j2 = 0.0;
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("Booting... Closed-Loop System (Hardware PCNT - Fixed Direction)");
+  Serial.println("Booting... Closed-Loop System (Absolute Coordinate Sync)");
 
-  // تفعيل الهاردوير كاونتر
   pinMode(ENC2_A, INPUT_PULLUP);
   pinMode(ENC2_B, INPUT_PULLUP);
 
@@ -115,6 +113,7 @@ void setup() {
 }
 
 void loop() {
+  // 1. استقبال الأوامر من MoveIt
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();
@@ -138,6 +137,7 @@ void loop() {
     }
   }
 
+  // 2. 🖨️ المراقبة الحية
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint > 250) {
     lastPrint = millis();
@@ -154,6 +154,7 @@ void loop() {
     Serial.println("°");
   }
 
+  // 3. 🛡️ حارس الإنكودر (التصحيح الموثوق)
   static unsigned long lastCheck = 0;
   if (millis() - lastCheck > 50 && !steppers[1]->isRunning()) {
     lastCheck = millis();
@@ -165,8 +166,13 @@ void loop() {
     float error_angle = target_angle_j2 - actual_angle_j2;
 
     if (abs(error_angle) > 1.0) {
-       long steps_to_correct = (long)(error_angle * STEPS_PER_DEGREE * GEAR_RATIOS[1]);
-       steppers[1]->move(steps_to_correct); 
+       // 🛠️ الحل السحري: مزامنة عقل الموتور مع الواقع الفيزيائي أولاً
+       long actual_steps = (long)(actual_angle_j2 * STEPS_PER_DEGREE * GEAR_RATIOS[1]);
+       steppers[1]->setCurrentPosition(actual_steps); 
+
+       // 🛠️ استخدام الأمر المطلق للوصول للهدف بشكل آمن ومتوافق مع MoveIt
+       long target_steps = (long)(target_angle_j2 * STEPS_PER_DEGREE * GEAR_RATIOS[1]);
+       steppers[1]->moveTo(target_steps); 
     }
   }
 }

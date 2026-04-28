@@ -14,6 +14,9 @@ joint_limits:
     has_acceleration_limits: false
     max_acceleration: 0.0
   j2_arm_joint:
+    has_position_limits: true
+    min_position: -1.082  # زاوية -64 درجة بالراديان
+    max_position: 1.396   # زاوية 56 درجة بالراديان
     has_velocity_limits: true
     max_velocity: 10.0
     has_acceleration_limits: false
