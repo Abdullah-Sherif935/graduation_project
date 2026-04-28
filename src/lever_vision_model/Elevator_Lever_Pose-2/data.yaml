@@ -1,0 +1,18 @@
+flip_idx:
+- 0
+- 1
+kpt_shape:
+- 2
+- 3
+names:
+- lever
+nc: 1
+roboflow:
+  license: CC BY 4.0
+  project: elevator_lever_pose
+  url: https://universe.roboflow.com/abdullahs-workspace-sseko/elevator_lever_pose/dataset/2
+  version: 2
+  workspace: abdullahs-workspace-sseko
+test: ../test/images
+train: ../train/images
+val: ../valid/images
