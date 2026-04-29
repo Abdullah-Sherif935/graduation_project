@@ -1,31 +1,27 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PoseStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import tf2_ros
-from tf2_geometry_msgs import do_transform_point
+from tf2_geometry_msgs import do_transform_pose
 import serial  
-from collections import deque 
 
 class LeverPoseNode(Node):
     def __init__(self):
-        super().__init__('lever_pose_node')
+        super().__init__('lever_pose_detector')
         
-        # 1. إعدادات الموديل (تأكد من المسار)
-        model_path = '/home/abdullah/ros2_ws/src/lever_vision_model/runs/pose/lever_v2_model/weights/best.pt'
+        model_path = '/home/eng-abdullah/ros2_ws/src/lever_vision_model/runs/pose/lever_v2_model/weights/best.pt'
         self.model = YOLO(model_path) 
         self.bridge = CvBridge()
         self.latest_depth_frame = None
 
-        # ثوابت الكاميرا Astra Pro
         self.cx, self.cy = 320, 240
         self.fx, self.fy = 554, 554
 
-        # 2. إعداد السيريال (مغلف بـ try عشان ميقفلش الكود لو الـ ESP مش واصلة)
         try:
             self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=0.05)
             self.get_logger().info('Serial Bridge: ESP32 Connected.')
@@ -33,18 +29,25 @@ class LeverPoseNode(Node):
             self.ser = None
             self.get_logger().warn('Serial Bridge: ESP32 not found. Continuing in Offline Mode.')
 
-        # 3. الفلتر (Moving Average) لآخر 10 قراءات
-        self.history = deque(maxlen=10)
+        # المتغيرات الخاصة بالفلتر الجديد (EMA & Deadband)
+        self.smoothed_x = None
+        self.smoothed_y = None
+        self.smoothed_z = None
+        self.smoothed_angle = None
+        
+        # معامل النعومة (رقم من 0 لـ 1.. كل ما يقل، الأرقام تثبت أكتر بس الاستجابة تبقى أبطأ سنة)
+        self.alpha_pos = 0.15 
+        self.alpha_ang = 0.10 
+        
+        # حدود التجاهل (المنطقة الميتة)
+        self.angle_deadband = 1.5 # تجاهل أي اهتزاز أقل من 1.5 درجة
 
-        # 4. إعدادات ROS (Publisher & TF)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.point_pub = self.create_publisher(PointStamped, '/lever_point_arm', 10)
+        self.pose_pub = self.create_publisher(PoseStamped, '/lever_pose_arm', 10)
 
         self.depth_sub = self.create_subscription(Image, '/camera/depth/image_raw', self.depth_callback, 10)
         self.color_sub = self.create_subscription(Image, '/camera/color/image_raw', self.color_callback, 10)
-        
-        self.get_logger().info('System Ready! Publishing to /lever_point_arm even if TF is missing.')
 
     def depth_callback(self, msg):
         self.latest_depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
@@ -53,77 +56,87 @@ class LeverPoseNode(Node):
         if self.latest_depth_frame is None: return
         color_frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         
-        results = self.model(color_frame, conf=0.4, verbose=False)
+        try:
+            results = self.model(color_frame, conf=0.4, verbose=False)
 
-        for r in results:
-            # صمام الأمان
-            if r.keypoints is None or len(r.keypoints.xy) == 0 or len(r.keypoints.xy[0]) < 2:
-                continue
+            for r in results:
+                if r.keypoints is None or len(r.keypoints.xy) == 0 or len(r.keypoints.xy[0]) < 2:
+                    continue
 
-            try:
-                # 1. استخراج النقاط وحساب الزاوية
-                pivot = r.keypoints.xy[0][0]
-                tip = r.keypoints.xy[0][1]
-                u_p, v_p = int(pivot[0]), int(pivot[1])
-                u_t, v_t = int(tip[0]), int(tip[1])
-
-                angle_rad = np.arctan2(v_t - v_p, u_t - u_p)
-                angle_deg = np.degrees(angle_rad)
-
-                # 2. حساب العمق (Depth)
-                depth_window = self.latest_depth_frame[max(0,v_p-2):v_p+2, max(0,u_p-2):u_p+2]
-                valid_depths = depth_window[depth_window > 0]
-                
-                if len(valid_depths) > 0:
-                    depth_z_mm = int(np.median(valid_depths)) - 49 
-                    depth_m = float(depth_z_mm) / 1000.0
+                try:
+                    pivot = r.keypoints.xy[0][0]
+                    tip = r.keypoints.xy[0][1]
+                    u_p, v_p = int(pivot[0]), int(pivot[1])
+                    u_t, v_t = int(tip[0]), int(tip[1])
                     
-                    # إحداثيات الكاميرا (Pinhole Math)
-                    p_x_cam = depth_m
-                    p_y_cam = (self.cx - u_p) * (depth_m / self.fx)
-                    p_z_cam = (self.cy - v_p) * (depth_m / self.fy)
+                    # الزاوية الخام من الموديل
+                    raw_angle = np.degrees(np.arctan2(v_t - v_p, u_t - u_p))
 
-                    # 3. إنشاء الرسالة (PointStamped)
-                    msg_out = PointStamped()
-                    msg_out.header.stamp = self.get_clock().now().to_msg()
-                    msg_out.header.frame_id = 'camera_link' # القيمة الافتراضية
-                    msg_out.point.x, msg_out.point.y, msg_out.point.z = p_x_cam, p_y_cam, p_z_cam
-
-                    # --- 4. محاولة التحويل (Transform) ---
-                    try:
-                        transform = self.tf_buffer.lookup_transform('arm_base_link', 'camera_link', rclpy.time.Time())
-                        arm_p = do_transform_point(msg_out, transform)
+                    depth_window = self.latest_depth_frame[max(0,v_p-2):v_p+2, max(0,u_p-2):u_p+2]
+                    valid_depths = depth_window[depth_window > 0]
+                    
+                    if len(valid_depths) > 0:
+                        depth_m = float(np.median(valid_depths) - 49) / 1000.0
                         
-                        # تحديث الرسالة بالقيم الجديدة بعد التحويل
-                        msg_out.header.frame_id = 'arm_base_link'
-                        msg_out.point = arm_p.point
+                        msg_out = PoseStamped()
+                        msg_out.header.stamp = self.get_clock().now().to_msg()
+                        msg_out.header.frame_id = 'camera_link'
                         
-                        # 5. الفلترة والإرسال للسيريال
-                        self.history.append([arm_p.point.x, arm_p.point.y, arm_p.point.z, angle_deg])
-                        avg = np.mean(self.history, axis=0)
-                        
-                        if self.ser and self.ser.is_open:
-                            payload = f"<{avg[0]:.3f},{avg[1]:.3f},{avg[2]:.3f},{avg[3]:.1f}>\n"
-                            self.ser.write(payload.encode())
-                    except:
-                        # لو الـ TF فشل، الرسالة هتفضل شايلة إحداثيات الكاميرا (debug mode)
-                        pass
+                        # الإحداثيات الخام
+                        raw_x = depth_m
+                        raw_y = (320 - u_p) * (depth_m / 554)
+                        raw_z = (240 - v_p) * (depth_m / 554)
 
-                    # --- 6. النشر للـ Topic (خارج بلوك التحويل لضمان الظهور في الـ echo) ---
-                    self.point_pub.publish(msg_out)
+                        # ------------------ تطبيق الفلتر الذكي ------------------
+                        if self.smoothed_x is None:
+                            # أول قراءة خالص
+                            self.smoothed_x, self.smoothed_y, self.smoothed_z = raw_x, raw_y, raw_z
+                            self.smoothed_angle = raw_angle
+                        else:
+                            # فلترة الإحداثيات XYZ
+                            self.smoothed_x += self.alpha_pos * (raw_x - self.smoothed_x)
+                            self.smoothed_y += self.alpha_pos * (raw_y - self.smoothed_y)
+                            self.smoothed_z += self.alpha_pos * (raw_z - self.smoothed_z)
 
-                    # 7. الرسم
-                    cv2.line(color_frame, (u_p, v_p), (u_t, v_t), (255, 0, 0), 2)
-                    cv2.circle(color_frame, (u_p, v_p), 5, (0, 0, 255), -1)
-                    cv2.putText(color_frame, f"Dist: {depth_z_mm}mm", (u_p + 10, v_p - 30), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(color_frame, f"Ang: {angle_deg:.1f}deg", (u_p + 10, v_p - 10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                            # فلترة الزاوية مع تجاهل الاهتزازات الصغيرة (Deadband)
+                            if abs(raw_angle - self.smoothed_angle) > self.angle_deadband:
+                                self.smoothed_angle += self.alpha_ang * (raw_angle - self.smoothed_angle)
+                        # --------------------------------------------------------
 
-            except Exception as e:
-                pass
+                        # تخزين القيم المتفلترة في الرسالة
+                        msg_out.pose.position.x = self.smoothed_x
+                        msg_out.pose.position.y = self.smoothed_y
+                        msg_out.pose.position.z = self.smoothed_z
+                        msg_out.pose.orientation.z = self.smoothed_angle 
+
+                        try:
+                            transform = self.tf_buffer.lookup_transform('arm_base_link', 'camera_link', rclpy.time.Time())
+                            arm_pose = do_transform_pose(msg_out.pose, transform)
+                            msg_out.pose = arm_pose
+                            msg_out.header.frame_id = 'arm_base_link'
+                            
+                            if self.ser:
+                                payload = f"<{msg_out.pose.position.x:.3f},{msg_out.pose.position.y:.3f},{msg_out.pose.position.z:.3f},{self.smoothed_angle:.1f}>\n"
+                                self.ser.write(payload.encode())
+                        except Exception:
+                            pass 
+
+                        self.pose_pub.publish(msg_out)
+
+                        # الرسم على الشاشة باستخدام القيم المتفلترة لثبات بصري
+                        cv2.line(color_frame, (u_p, v_p), (u_t, v_t), (255, 0, 0), 2)
+                        cv2.putText(color_frame, f"Ang: {self.smoothed_angle:.1f} deg", (u_p + 10, v_p - 10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        cv2.putText(color_frame, f"Dist: {int(self.smoothed_x*1000)} mm", (u_p + 10, v_p - 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                except Exception as math_err:
+                    self.get_logger().error(f"Math Error: {math_err}")
+
+        except Exception as yolo_err:
+            self.get_logger().error(f"YOLO Error: {yolo_err}")
         
-        cv2.imshow("Detection (Diagnosis Mode)", color_frame)
+        cv2.imshow("Detection (Pose Mode)", color_frame)
         cv2.waitKey(1)
 
 def main(args=None):

@@ -25,8 +25,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            # ده بيخليك تشغل الكود كأنه أمر في التيرمينال
+            # هنا بنرص كل الأوامر ورا بعض في نفس القائمة
             'lever_detector = lever_vision_model.lever_detector:main',
+            'vision_moveit_coordinator = lever_vision_model.vision_moveit_coordinator:main',
         ],
     },
 )

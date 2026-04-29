@@ -10,34 +10,34 @@ default_acceleration_scaling_factor: 0.1
 joint_limits:
   j1_arm_joint:
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
   j2_arm_joint:
     has_position_limits: true
-    min_position: -1.082  # زاوية -64 درجة بالراديان
-    max_position: 1.396   # زاوية 56 درجة بالراديان
+    min_position: -1.745  # زاوية درجة بالراديان
+    max_position: 0.261   # زاوية  درجة بالراديان
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
   j3_arm_joint:
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
   j4_arm_joint:
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
   j5_arm_joint:
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
   j6_arm_joint:
     has_velocity_limits: true
-    max_velocity: 10.0
+    max_velocity: 2.0
     has_acceleration_limits: false
     max_acceleration: 0.0
